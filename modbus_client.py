@@ -1,7 +1,11 @@
-# modbus_client.py
 from pymodbus.client import ModbusSerialClient
 from pymodbus.exceptions import ModbusException
-from config import REGISTER_MAP, SCALE_FACTORS, SLAVE_ADDRESS, BAUDRATE, PARITY, STOPBITS, BYTESIZE, TIMEOUT
+
+try:
+    from config import REGISTER_MAP, SCALE_FACTORS, SLAVE_ADDRESS, BAUDRATE, PARITY, STOPBITS, BYTESIZE, TIMEOUT, PRIORITY_REGISTERS
+except ImportError:
+    from .config import REGISTER_MAP, SCALE_FACTORS, SLAVE_ADDRESS, BAUDRATE, PARITY, STOPBITS, BYTESIZE, TIMEOUT, PRIORITY_REGISTERS
+
 import logging
 
 # Configuração de logging
@@ -44,6 +48,7 @@ class ModbusClient:
             self.client.close()
             logger.info("Desconectado.")
         self.connected = False
+        self.last_readings.clear()  # Limpa cache ao desconectar
 
     def test_connection(self):
         if not self.connected:
@@ -73,7 +78,16 @@ class ModbusClient:
             return None
 
         results = {}
-        for name, address in REGISTER_MAP.items():
+        error_count = 0
+        
+        # Leitura prioritária primeiro
+        priority_items = [(name, REGISTER_MAP[name]) for name in PRIORITY_REGISTERS if name in REGISTER_MAP]
+        other_items = [(name, address) for name, address in REGISTER_MAP.items() if name not in PRIORITY_REGISTERS]
+        
+        # Combina prioritários + demais
+        all_items = priority_items + other_items
+        
+        for name, address in all_items:
             try:
                 logger.debug(f"Lendo {name} no endereço {address}")
                 response = self.client.read_input_registers(
@@ -84,11 +98,8 @@ class ModbusClient:
 
                 if response.isError():
                     logger.warning(f"Erro na leitura de {name}: {response}")
-                    # Usa último valor válido se disponível
-                    if name in self.last_readings:
-                        results[name] = self.last_readings[name]
-                    else:
-                        results[name] = None
+                    results[name] = None
+                    error_count += 1
                 else:
                     raw_value = response.registers[0]
                     factor = SCALE_FACTORS.get(name, 1)
@@ -99,10 +110,17 @@ class ModbusClient:
 
             except ModbusException as e:
                 logger.error(f"Exceção Modbus em {name}: {e}")
-                results[name] = self.last_readings.get(name, None)
+                results[name] = None
+                error_count += 1
             except Exception as e:
                 logger.error(f"Erro inesperado em {name}: {e}")
-                results[name] = self.last_readings.get(name, None)
+                results[name] = None
+                error_count += 1
+
+        # Se todos os registros falharam, limpa o cache (dispositivo provavelmente desligado)
+        if error_count == len(REGISTER_MAP):
+            logger.warning("Todos os registros falharam - dispositivo pode estar desligado")
+            self.last_readings.clear()
 
         return results
 

@@ -1,29 +1,30 @@
-# config.py
 SLAVE_ADDRESS = 30
 BAUDRATE = 57600
 PARITY = 'N'
 STOPBITS = 1
 BYTESIZE = 8
-TIMEOUT =1
+TIMEOUT = 0.5
 
-# Mapa de endereços Modbus CORRIGIDO (endereços reais do manual convertidos para 0-based)
 REGISTER_MAP = {
     # Entradas binárias (não usadas)
     # Registros de entrada (FC 0x04)
-    'tensao_r': 63,    # Endereço 63 no manual -> 62 (0-based)
-    'tensao_s': 64,    # 64 -> 63
-    'tensao_t': 65,    # 65 -> 64
-    'corrente_r': 66,  # 66 -> 65
-    'corrente_s': 67,  # 67 -> 66
-    'corrente_t': 68,  # 68 -> 67
-    'frequencia': 69,  # 69 -> 68
-    'tensao_retificador': 70,  # 70 -> 69
-    'tensao_bateria': 71,      # 71 -> 70
-    'tensao_consumidor': 72,   # 72 -> 71
-    'corrente_retificador': 73, # 73 -> 72
-    'corrente_bateria': 74,     # 74 -> 73
-    'temperatura_bateria': 76   # 76 -> 75
+    'tensao_r': 63,
+    'tensao_s': 64,
+    'tensao_t': 65,
+    'corrente_r': 66,
+    'corrente_s': 67,
+    'corrente_t': 68,
+    'frequencia': 69,
+    'tensao_retificador': 70,
+    'tensao_bateria': 71,
+    'tensao_consumidor': 72,
+    'corrente_retificador': 73,
+    'corrente_bateria': 74,
+    'temperatura_bateria': 76
 }
+
+# Registros prioritários (lidos primeiro para interface responsiva)
+PRIORITY_REGISTERS = ['tensao_bateria', 'corrente_retificador', 'temperatura_bateria']
 
 # Fatores de escala
 SCALE_FACTORS = {

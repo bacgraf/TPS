@@ -1,22 +1,52 @@
 # ui.py
 import sys
 import os
-
-os.environ["QT_OPENGL"] = "software"
-os.environ["QT_QUICK_BACKEND"] = "software"
-
 import serial.tools.list_ports
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QGroupBox, QGridLayout, QStatusBar
 )
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 from modbus_client import ModbusClient
-from config import REGISTER_MAP
+
+try:
+    from config import REGISTER_MAP
+except ImportError:
+    from .config import REGISTER_MAP
+
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class ModbusWorker(QThread):
+    data_ready = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, modbus_client):
+        super().__init__()
+        self.modbus_client = modbus_client
+        self.running = False
+    
+    def run(self):
+        self.running = True
+        try:
+            if self.modbus_client.connected:
+                readings = self.modbus_client.read_all()
+                if readings:
+                    self.data_ready.emit(readings)
+                else:
+                    self.error_occurred.emit("Falha ao obter leituras")
+        except Exception as e:
+            self.error_occurred.emit(f"Erro na thread: {str(e)}")
+        finally:
+            self.running = False
+    
+    def stop(self):
+        self.running = False
+        self.quit()
+        self.wait()
 
 
 class TPSMonitorUI(QMainWindow):
@@ -26,9 +56,10 @@ class TPSMonitorUI(QMainWindow):
         self.setGeometry(100, 100, 1200, 700)
 
         self.modbus_client = ModbusClient()
+        self.worker = None
         self.timer = QTimer()
         self.timer.setInterval(3000)  # 3 segundos
-        self.timer.timeout.connect(self.update_readings)
+        self.timer.timeout.connect(self.start_reading_worker)
 
         self.init_ui()
         self.refresh_ports()
@@ -199,6 +230,74 @@ class TPSMonitorUI(QMainWindow):
         self.refresh_btn.clicked.connect(self.refresh_ports)
         self.connect_btn.clicked.connect(self.connect_device)
         self.disconnect_btn.clicked.connect(self.disconnect_device)
+    
+    def start_reading_worker(self):
+        if not self.modbus_client.connected:
+            return
+        
+        # Se já existe um worker rodando, não inicia outro
+        if self.worker and self.worker.running:
+            return
+        
+        self.worker = ModbusWorker(self.modbus_client)
+        self.worker.data_ready.connect(self.process_readings)
+        self.worker.error_occurred.connect(self.handle_worker_error)
+        self.worker.start()
+    
+    def process_readings(self, readings):
+        try:
+            errors = 0
+            # Processa todos os valores
+            for name, value in readings.items():
+                if name not in self.reading_labels:
+                    continue
+
+                if value is None:
+                    self.reading_labels[name].setText("ERRO")
+                    self.reading_labels[name].setStyleSheet("color: red;")
+                    errors += 1
+                else:
+                    self.reading_labels[name].setStyleSheet("color: black;")
+                    if isinstance(value, float):
+                        self.reading_labels[name].setText(f"{value:.1f}")
+                    else:
+                        self.reading_labels[name].setText(str(value))
+
+            # Verifica diferenças nos grupos (mesmo código anterior)
+            grupos = [
+                {'nomes': ['tensao_retificador', 'tensao_consumidor', 'tensao_bateria'], 'descricao': 'Tensões CC'},
+                {'nomes': ['corrente_retificador', 'corrente_bateria'], 'descricao': 'Correntes CC'},
+                {'nomes': ['tensao_r', 'tensao_s', 'tensao_t'], 'descricao': 'Tensões CA'},
+                {'nomes': ['corrente_r', 'corrente_s', 'corrente_t'], 'descricao': 'Correntes CA'}
+            ]
+
+            for grupo in grupos:
+                nomes = grupo['nomes']
+                valores_validos = []
+
+                for nome in nomes:
+                    if (nome in readings and readings[nome] is not None and not isinstance(readings[nome], str)):
+                        valores_validos.append(readings[nome])
+
+                if len(valores_validos) >= 2:
+                    media = sum(valores_validos) / len(valores_validos)
+                    for nome in nomes:
+                        if nome in readings and readings[nome] is not None:
+                            valor = readings[nome]
+                            diferenca_percentual = abs(valor - media) / media * 100 if media != 0 else 0
+                            if diferenca_percentual > 5:
+                                self.reading_labels[nome].setStyleSheet("color: red;")
+                            else:
+                                self.reading_labels[nome].setStyleSheet("color: green;")
+
+            status = "Leituras atualizadas com sucesso." if errors == 0 else f"Leituras atualizadas com {errors} erro(s)."
+            self.status_bar.showMessage(status)
+        except Exception as e:
+            logger.error(f"Erro no processamento: {e}")
+            self.status_bar.showMessage(f"Erro no processamento: {str(e)}", 5000)
+    
+    def handle_worker_error(self, error_msg):
+        self.status_bar.showMessage(error_msg, 3000)
 
     def refresh_ports(self):
         self.port_combo.clear()
@@ -248,95 +347,13 @@ class TPSMonitorUI(QMainWindow):
             label.setText("--")
             label.setStyleSheet("color: black;")
 
-    def update_readings(self):
-        if not self.modbus_client.connected:
-            return
 
-        try:
-            readings = self.modbus_client.read_all()
-            if readings:
-                errors = 0
-                # Primeiro passamos para mostrar todos os valores
-                for name, value in readings.items():
-                    if name not in self.reading_labels:
-                        continue
-
-                    if value is None:
-                        self.reading_labels[name].setText("ERRO")
-                        self.reading_labels[name].setStyleSheet("color: red;")
-                        errors += 1
-                    else:
-                        # Inicialmente colocamos preto (será sobrescrito para grupos relevantes)
-                        self.reading_labels[name].setStyleSheet("color: black;")
-                        if isinstance(value, float):
-                            self.reading_labels[name].setText(f"{value:.1f}")
-                        else:
-                            self.reading_labels[name].setText(str(value))
-
-                # Agora verificamos todos os grupos de medições
-                grupos = [
-                    # Tensões CC
-                    {
-                        'nomes': ['tensao_retificador', 'tensao_consumidor', 'tensao_bateria'],
-                        'descricao': 'Tensões CC'
-                    },
-                    # Correntes CC
-                    {
-                        'nomes': ['corrente_retificador', 'corrente_bateria'],
-                        'descricao': 'Correntes CC'
-                    },
-                    # Tensões CA
-                    {
-                        'nomes': ['tensao_r', 'tensao_s', 'tensao_t'],
-                        'descricao': 'Tensões CA'
-                    },
-                    # Correntes CA
-                    {
-                        'nomes': ['corrente_r', 'corrente_s', 'corrente_t'],
-                        'descricao': 'Correntes CA'
-                    }
-                ]
-
-                # Processar cada grupo
-                for grupo in grupos:
-                    nomes = grupo['nomes']
-                    valores_validos = []
-
-                    # Coletar valores válidos para o grupo
-                    for nome in nomes:
-                        if (nome in readings and
-                                readings[nome] is not None and
-                                not isinstance(readings[nome], str)):  # Não é "ERRO"
-                            valores_validos.append(readings[nome])
-
-                    # Verificar diferenças se temos pelo menos 2 valores válidos
-                    if len(valores_validos) >= 2:
-                        # Calcular a média dos valores
-                        media = sum(valores_validos) / len(valores_validos)
-
-                        # Verificar cada variável em relação à média
-                        for nome in nomes:
-                            if nome in readings and readings[nome] is not None:
-                                valor = readings[nome]
-                                # Calcular diferença percentual (evitar divisão por zero)
-                                diferenca_percentual = abs(valor - media) / media * 100 if media != 0 else 0
-
-                                if diferenca_percentual > 5:
-                                    self.reading_labels[nome].setStyleSheet("color: red;")
-                                else:
-                                    self.reading_labels[nome].setStyleSheet("color: green;")
-
-                status = "Leituras atualizadas com sucesso." if errors == 0 else f"Leituras atualizadas com {errors} erro(s)."
-                self.status_bar.showMessage(status)
-            else:
-                self.status_bar.showMessage("Falha ao obter leituras.", 3000)
-        except Exception as e:
-            logger.error(f"Erro na atualização: {e}")
-            self.status_bar.showMessage(f"Erro crítico: {str(e)}", 5000)
 
     def closeEvent(self, event):
-        """Garante a parada do timer e desconexão ao fechar a janela"""
+        """Garante a parada do timer, worker e desconexão ao fechar a janela"""
         self.timer.stop()
+        if self.worker:
+            self.worker.stop()
         if self.modbus_client.connected:
             self.modbus_client.disconnect()
         event.accept()

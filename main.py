@@ -5,12 +5,12 @@ import logging
 from PyQt5.QtWidgets import QApplication
 from ui import TPSMonitorUI
 
-# Configuração para evitar crashes
+# Configuração Qt para evitar crashes
 os.environ["QT_SCALE_FACTOR"] = "1"
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
 os.environ["QT_SCREEN_SCALE_FACTORS"] = "1"
+os.environ["QT_OPENGL"] = "software"
 os.environ["QT_QUICK_BACKEND"] = "software"
-os.environ["QMLSCENE_DEVICE"] = "softwarecontext"
 
 # Configura o logging
 logging.basicConfig(
